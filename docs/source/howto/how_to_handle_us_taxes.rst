@@ -26,55 +26,63 @@ to the submission.
 .. code-block:: python
 
     from oscar.apps.checkout import session
+    from apps import tax
 
-    from . import tax
-
+    # Override the session mixin (which every checkout view uses) so we can apply
+    # taxes when the shipping address is known.
     class CheckoutSessionMixin(session.CheckoutSessionMixin):
 
         def build_submission(self, **kwargs):
             submission = super(CheckoutSessionMixin, self).build_submission(
                 **kwargs)
 
-            if submission['shipping_address']:
+            if submission['shipping_address'] and submission['shipping_method']:
                 tax.apply_to(submission)
 
                 # Recalculate order total to ensure we have a tax-inclusive total
                 submission['order_total'] = self.get_order_totals(
-                    submission['basket'],
-                    shipping_method=submission['shipping_method'])
+                    submission['basket'], submission['shipping_charge'])
 
             return submission
 
 An example implementation of the ``tax.py`` module is:
 
-   .. code-block:: python
+.. code-block:: python
 
     from decimal import Decimal as D
 
+    # State tax rates
+    STATE_TAX_RATES = {
+        'NJ': D('0.07')
+    }
+    ZERO = D('0.00')
+
     def apply_to(submission):
-        # Assume 7% sales tax on sales to New Jersey  You could instead use an
-        # external service like Avalara to look up the appropriates taxes.
-        STATE_TAX_RATES = {
-            'NJ': D('0.07')
-        }
+        """
+        Calculate and apply taxes to a submission
+        """
+        # This is a dummy tax function which only applies taxes for addresses in
+        # New Jersey and New York. In reality, you'll probably want to use a tax
+        # service like Avalara to look up the taxes for a given submission.
         shipping_address = submission['shipping_address']
         rate = STATE_TAX_RATES.get(
-            shipping_address.state, D('0.00'))
+            shipping_address.state, ZERO)
         for line in submission['basket'].all_lines():
             line_tax = calculate_tax(
                 line.line_price_excl_tax_incl_discounts, rate)
+            # We need to split the line tax down into a unit tax amount.
             unit_tax = (line_tax / line.quantity).quantize(D('0.01'))
-            line.purchase_info = unit_tax
+            line.purchase_info.price.tax = unit_tax
 
-        # Note, we change the submission in place - we don't need to
-        # return anything from this function
-        shipping_method = submission['shipping_method']
-        shipping_method.tax = calculate_tax(
-            shipping_method.charge_incl_tax, rate)
+        shipping_charge = submission['shipping_charge']
+        if shipping_charge is not None:
+            shipping_charge.tax = calculate_tax(
+                shipping_charge.excl_tax, rate)
 
-        def calculate_tax(price, rate):
-            tax = price * rate
-            return tax.quantize(D('0.01'))
+
+    def calculate_tax(price, rate):
+        tax = price * rate
+        return tax.quantize(D('0.01'))
 
 .. tip::
 
